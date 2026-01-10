@@ -16,13 +16,13 @@ const PROJECTS = [
 const BASE = import.meta.env.VITE_DATA_BASE_URL;
 
 async function fetchJson(url) {
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} - ${url}`);
   return await r.json();
 }
 
 async function fetchGzJson(url) {
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} - ${url}`);
   const buf = await r.arrayBuffer();
   const inflated = pako.ungzip(new Uint8Array(buf), { to: "string" });
@@ -37,7 +37,7 @@ function StatCard({ label, value }) {
   return (
     <div style={{
       border: "1px solid #e5e7eb", borderRadius: 12, padding: 12,
-      minWidth: 120, background: "white"
+      minWidth: 140, background: "white"
     }}>
       <div style={{ fontSize: 12, color: "#6b7280" }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 700 }}>
@@ -47,120 +47,242 @@ function StatCard({ label, value }) {
   );
 }
 
+function Section({ title, subtitle, children, right }) {
+  return (
+    <div style={{
+      marginTop: 14, background: "white",
+      border: "1px solid #e5e7eb", borderRadius: 16, padding: 14
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 14 }}>{title}</div>
+          {subtitle && <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{subtitle}</div>}
+        </div>
+        {right}
+      </div>
+      <div style={{ marginTop: 10 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [projectKey, setProjectKey] = useState(PROJECTS[0].key);
+
   const [indexData, setIndexData] = useState(null);
-
   const [node, setNode] = useState("");
-  const [month, setMonth] = useState(""); // "YYYY_MM"
+  const [month, setMonth] = useState("");     // "YYYY_MM"
+  const [year, setYear] = useState("2024");   // "YYYY"
+  const [day, setDay] = useState("");         // "YYYY-MM-DD"
 
-  const [series, setSeries] = useState([]);
-  const [stats, setStats] = useState({ min: null, max: null, avg: null });
-
-  const [loadingIndex, setLoadingIndex] = useState(false);
-  const [loadingMonth, setLoadingMonth] = useState(false);
+  const [dailySeries, setDailySeries] = useState([]);     // [{d, avg, min, max, n}]
+  const [monthlySeries, setMonthlySeries] = useState([]); // [{t, d, h, pml}]
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState({ idx: false, daily: false, month: false });
 
-  // Cargar index al cambiar proyecto
+  // 1) Load index.json
   useEffect(() => {
     let cancel = false;
-    async function run() {
+    (async () => {
       setError("");
-      setLoadingIndex(true);
+      setLoading(s => ({ ...s, idx: true }));
       setIndexData(null);
-      setSeries([]);
-      setStats({ min: null, max: null, avg: null });
+      setDailySeries([]);
+      setMonthlySeries([]);
       try {
         const url = `${BASE}/pml-mda/${projectKey}/index.json`;
         const idx = await fetchJson(url);
         if (cancel) return;
+
         setIndexData(idx);
 
-        // default node
-        const defaultNode = idx.defaultNode || (idx.nodes?.[0]?.node ?? "");
+        const defaultNode = idx.defaultNode || idx.nodes?.[0]?.node || "";
         setNode(defaultNode);
 
-        // default month: último mes disponible del default node
+        // default month: last available for default node
         const nodeObj = (idx.nodes || []).find(n => n.node === defaultNode) || idx.nodes?.[0];
         const months = (nodeObj?.months || []).slice().sort();
-        const last = months.length ? months[months.length - 1] : "";
-        setMonth(last);
+        const lastMonth = months.length ? months[months.length - 1] : "";
+        setMonth(lastMonth);
+
+        // default year: from lastMonth if exists
+        if (lastMonth?.length >= 4) setYear(String(lastMonth).slice(0, 4));
       } catch (e) {
         if (!cancel) setError(String(e.message || e));
       } finally {
-        if (!cancel) setLoadingIndex(false);
+        if (!cancel) setLoading(s => ({ ...s, idx: false }));
       }
-    }
-    run();
+    })();
     return () => { cancel = true; };
   }, [projectKey]);
 
-  // Lista de nodos/meses
   const nodeOptions = useMemo(() => {
     if (!indexData?.nodes) return [];
     return indexData.nodes.map(n => ({ node: n.node, system: n.system }));
   }, [indexData]);
 
   const monthOptions = useMemo(() => {
-    if (!indexData?.nodes) return [];
+    if (!indexData?.nodes || !node) return [];
     const nodeObj = indexData.nodes.find(n => n.node === node);
     return (nodeObj?.months || []).slice().sort();
   }, [indexData, node]);
 
-  // Cargar mes al cambiar node o month
+  // 2) Load daily series (historical) whenever project/node changes
   useEffect(() => {
     let cancel = false;
-    async function run() {
+    (async () => {
+      if (!projectKey || !node) return;
+      setError("");
+      setLoading(s => ({ ...s, daily: true }));
+      setDailySeries([]);
+      try {
+        const url = `${BASE}/pml-mda/${projectKey}/nodes/${node}/daily/series.json.gz`;
+        const data = await fetchGzJson(url);
+        if (cancel) return;
+
+        const daily = (data.daily || []).map(row => ({
+          d: row[0],          // YYYY-MM-DD
+          avg: Number(row[1]),
+          min: Number(row[2]),
+          max: Number(row[3]),
+          n: Number(row[4] ?? 0),
+        }));
+
+        setDailySeries(daily);
+
+        // default year: last date’s year if available
+        if (daily.length) {
+          const last = daily[daily.length - 1].d;
+          setYear(last.slice(0, 4));
+        }
+      } catch (e) {
+        if (!cancel) setError(String(e.message || e));
+      } finally {
+        if (!cancel) setLoading(s => ({ ...s, daily: false }));
+      }
+    })();
+    return () => { cancel = true; };
+  }, [projectKey, node]);
+
+  // years available from dailySeries
+  const yearOptions = useMemo(() => {
+    const set = new Set();
+    for (const r of dailySeries) set.add(r.d.slice(0, 4));
+    return Array.from(set).sort();
+  }, [dailySeries]);
+
+  // historical chart data (avg)
+  const histChart = useMemo(() => {
+    // downsample by month for the TOP chart (very light): keep one point per month (avg of daily avg)
+    // If you prefer daily, just return dailySeries directly.
+    const byMonth = new Map(); // YYYY-MM -> {sum, n, min, max}
+    for (const r of dailySeries) {
+      const ym = r.d.slice(0, 7);
+      const cur = byMonth.get(ym) || { sum: 0, n: 0, min: Infinity, max: -Infinity };
+      cur.sum += r.avg;
+      cur.n += 1;
+      if (r.min < cur.min) cur.min = r.min;
+      if (r.max > cur.max) cur.max = r.max;
+      byMonth.set(ym, cur);
+    }
+    const out = [];
+    for (const [ym, a] of Array.from(byMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+      out.push({ t: ym, avg: a.sum / a.n, min: a.min, max: a.max });
+    }
+    return out;
+  }, [dailySeries]);
+
+  // annual chart data (daily)
+  const annualChart = useMemo(() => {
+    return dailySeries
+      .filter(r => r.d.startsWith(year + "-"))
+      .map(r => ({ t: r.d, avg: r.avg, min: r.min, max: r.max }));
+  }, [dailySeries, year]);
+
+  // 3) Load monthly hourly whenever project/node/month changes
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
       if (!projectKey || !node || !month) return;
       setError("");
-      setLoadingMonth(true);
-      setSeries([]);
-      setStats({ min: null, max: null, avg: null });
-
+      setLoading(s => ({ ...s, month: true }));
+      setMonthlySeries([]);
       try {
         const url = `${BASE}/pml-mda/${projectKey}/nodes/${node}/hourly/${month}.json.gz`;
         const data = await fetchGzJson(url);
         if (cancel) return;
 
-        // rows: ["YYYY-MM-DD", hour, pml]
-        const rows = data.rows || [];
-        const points = rows.map((r, i) => {
+        // EXPECTED: data.rows = [ [YYYY-MM-DD, hour, pml], ... ]
+        const rows = data.rows || data.data || [];
+        const pts = rows.map((r) => {
           const d = r[0];
           const h = Number(r[1]);
           const p = Number(r[2]);
           return {
-            i,
+            d,
+            h,
             t: `${d} ${fmt2(h)}:00`,
             pml: p,
           };
         });
 
-        setSeries(points);
+        setMonthlySeries(pts);
 
-        if (points.length) {
-          let min = points[0].pml, max = points[0].pml, sum = 0;
-          for (const pt of points) {
-            const v = pt.pml;
-            if (v < min) min = v;
-            if (v > max) max = v;
-            sum += v;
-          }
-          const avg = sum / points.length;
-          setStats({
-            min: min.toFixed(2),
-            max: max.toFixed(2),
-            avg: avg.toFixed(2),
-          });
+        // default day: first day of month (or last if you prefer)
+        if (pts.length) {
+          const firstDay = pts[0].d;
+          setDay(firstDay);
         }
       } catch (e) {
         if (!cancel) setError(String(e.message || e));
       } finally {
-        if (!cancel) setLoadingMonth(false);
+        if (!cancel) setLoading(s => ({ ...s, month: false }));
       }
-    }
-    run();
+    })();
     return () => { cancel = true; };
   }, [projectKey, node, month]);
+
+  // days available within the selected month (from monthlySeries)
+  const dayOptions = useMemo(() => {
+    const set = new Set();
+    for (const r of monthlySeries) set.add(r.d);
+    return Array.from(set).sort();
+  }, [monthlySeries]);
+
+  // monthly stats
+  const monthStats = useMemo(() => {
+    if (!monthlySeries.length) return { min: null, max: null, avg: null, n: 0 };
+    let min = Infinity, max = -Infinity, sum = 0;
+    for (const r of monthlySeries) {
+      min = Math.min(min, r.pml);
+      max = Math.max(max, r.pml);
+      sum += r.pml;
+    }
+    return { min: min.toFixed(2), max: max.toFixed(2), avg: (sum / monthlySeries.length).toFixed(2), n: monthlySeries.length };
+  }, [monthlySeries]);
+
+  // daily (24h) derived from monthlySeries
+  const daySeries = useMemo(() => {
+    if (!day) return [];
+    const pts = monthlySeries
+      .filter(r => r.d === day)
+      .slice()
+      .sort((a, b) => a.h - b.h)
+      .map(r => ({ t: `${fmt2(r.h)}:00`, pml: r.pml }));
+    return pts;
+  }, [monthlySeries, day]);
+
+  const dayStats = useMemo(() => {
+    if (!daySeries.length) return { min: null, max: null, avg: null, n: 0 };
+    let min = Infinity, max = -Infinity, sum = 0;
+    for (const r of daySeries) {
+      min = Math.min(min, r.pml);
+      max = Math.max(max, r.pml);
+      sum += r.pml;
+    }
+    return { min: min.toFixed(2), max: max.toFixed(2), avg: (sum / daySeries.length).toFixed(2), n: daySeries.length };
+  }, [daySeries]);
 
   const title = PROJECTS.find(p => p.key === projectKey)?.name ?? projectKey;
 
@@ -169,7 +291,7 @@ export default function App() {
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>Sempra Infraestructura · PML MDA</div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>Sempra Infraestructura · PML MDA · TZ: America/Mexico_City</div>
             <h1 style={{ margin: "6px 0 0", fontSize: 26 }}>{title}</h1>
           </div>
 
@@ -180,25 +302,28 @@ export default function App() {
             </select>
 
             <select value={node} onChange={(e) => setNode(e.target.value)}
-              disabled={!nodeOptions.length || loadingIndex}
-              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 140 }}>
+              disabled={!nodeOptions.length || loading.idx}
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 160 }}>
               {nodeOptions.map(n => <option key={n.node} value={n.node}>{n.node} ({n.system})</option>)}
             </select>
 
+            <select value={year} onChange={(e) => setYear(e.target.value)}
+              disabled={!yearOptions.length || loading.daily}
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 110 }}>
+              {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+
             <select value={month} onChange={(e) => setMonth(e.target.value)}
-              disabled={!monthOptions.length || loadingIndex}
+              disabled={!monthOptions.length || loading.idx}
               style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 120 }}>
               {monthOptions.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
-          </div>
-        </div>
 
-        <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <StatCard label="Mínimo ($/MWh)" value={stats.min} />
-          <StatCard label="Promedio ($/MWh)" value={stats.avg} />
-          <StatCard label="Máximo ($/MWh)" value={stats.max} />
-          <div style={{ marginLeft: "auto", color: "#6b7280", fontSize: 12, display: "flex", alignItems: "center" }}>
-            {(loadingIndex || loadingMonth) ? "Cargando…" : (series.length ? `${series.length} puntos` : "—")}
+            <select value={day} onChange={(e) => setDay(e.target.value)}
+              disabled={!dayOptions.length || loading.month}
+              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 130 }}>
+              {dayOptions.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
           </div>
         </div>
 
@@ -211,25 +336,102 @@ export default function App() {
           </div>
         )}
 
-        <div style={{
-          marginTop: 14, background: "white", border: "1px solid #e5e7eb",
-          borderRadius: 16, padding: 14
-        }}>
-          <div style={{ height: 440 }}>
+        {/* 1) Historical (compact) */}
+        <Section
+          title="Histórico (resumen mensual)"
+          subtitle="Promedio mensual (derivado de agregados diarios). Útil para panorama general sin saturar."
+          right={<div style={{ fontSize: 12, color: "#6b7280" }}>{loading.daily ? "Cargando daily…" : `${histChart.length} meses`}</div>}
+        >
+          <div style={{ height: 240, minHeight: 240 }}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={series}>
+              <LineChart data={histChart}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="t" minTickGap={40} />
+                <YAxis />
+                <Tooltip />
+                <Line type="monotone" dataKey="avg" dot={false} strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+
+        {/* 2) Annual */}
+        <Section
+          title={`Anual (diario) — ${year}`}
+          subtitle="Promedio diario con banda min/max (si quieres, la activamos)."
+          right={<div style={{ fontSize: 12, color: "#6b7280" }}>{loading.daily ? "…" : `${annualChart.length} días`}</div>}
+        >
+          <div style={{ height: 260, minHeight: 260 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={annualChart}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="t" minTickGap={40} />
+                <YAxis />
+                <Tooltip />
+                <Line type="monotone" dataKey="avg" dot={false} strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Section>
+
+        {/* 3) Monthly */}
+        <Section
+          title={`Mensual (horario) — ${month}`}
+          subtitle="Detalle horario del mes."
+          right={
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <StatCard label="Mínimo ($/MWh)" value={monthStats.min} />
+              <StatCard label="Promedio ($/MWh)" value={monthStats.avg} />
+              <StatCard label="Máximo ($/MWh)" value={monthStats.max} />
+            </div>
+          }
+        >
+          <div style={{ height: 320, minHeight: 320 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={monthlySeries}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="t" minTickGap={50} />
                 <YAxis />
                 <Tooltip />
                 <Line type="monotone" dataKey="pml" dot={false} strokeWidth={2} />
               </LineChart>
             </ResponsiveContainer>
           </div>
-
-          <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-            Fuente: CENACE (PML MDA). Datos servidos desde S3.
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
+            {loading.month ? "Cargando…" : `${monthStats.n} puntos horarios`}
           </div>
+        </Section>
+
+        {/* 4) Daily */}
+        <Section
+          title={`Diario (horario) — ${day || "—"}`}
+          subtitle="Derivado del mes seleccionado. Días con 23/25 horas se muestran tal cual."
+          right={
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <StatCard label="Mínimo ($/MWh)" value={dayStats.min} />
+              <StatCard label="Promedio ($/MWh)" value={dayStats.avg} />
+              <StatCard label="Máximo ($/MWh)" value={dayStats.max} />
+            </div>
+          }
+        >
+          <div style={{ height: 220, minHeight: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={daySeries}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="t" />
+                <YAxis />
+                <Tooltip />
+                <Line type="monotone" dataKey="pml" dot={false} strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
+            {daySeries.length ? `${daySeries.length} horas` : "—"}
+          </div>
+        </Section>
+
+        <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
+          Fuente: CENACE (PML MDA). Datos en S3. App en Amplify.
         </div>
       </div>
     </div>
