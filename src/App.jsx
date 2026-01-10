@@ -1,16 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import pako from "pako";
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  ResponsiveContainer,
 } from "recharts";
 
 const PROJECTS = [
-  { key: "border",  name: "Border Solar" },
-  { key: "dds",     name: "Don Diego Solar" },
-  { key: "pima",    name: "PIMA Solar" },
-  { key: "rum",     name: "Rumorosa Solar" },
-  { key: "tep",     name: "Tepezalá Solar" },
-  { key: "ventika", name: "Ventika" },
+  { key: "border", display: "Border Solar" },
+  { key: "dds", display: "Don Diego Solar" },
+  { key: "pima", display: "PIMA Solar" },
+  { key: "rum", display: "Rumorosa Solar" },
+  { key: "tep", display: "Tepezalá Solar" },
+  { key: "ventika", display: "Ventika" },
 ];
 
 const BASE = import.meta.env.VITE_DATA_BASE_URL;
@@ -29,42 +35,126 @@ async function fetchGzJson(url) {
   return JSON.parse(inflated);
 }
 
-function fmt2(n) {
+function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
-function StatCard({ label, value }) {
+function ymFromMonthKey(monthKey) {
+  // "2024_05" -> { y: "2024", m: "05" }
+  return { y: String(monthKey).slice(0, 4), m: String(monthKey).slice(5, 7) };
+}
+
+function monthKeyFromDate(dateStr) {
+  // "YYYY-MM-DD" -> "YYYY_MM"
+  return `${dateStr.slice(0, 4)}_${dateStr.slice(5, 7)}`;
+}
+
+function isDesktop() {
+  return window.matchMedia && window.matchMedia("(min-width: 1024px)").matches;
+}
+
+function Card({ children, style }) {
   return (
-    <div style={{
-      border: "1px solid #e5e7eb", borderRadius: 12, padding: 12,
-      minWidth: 140, background: "white"
-    }}>
-      <div style={{ fontSize: 12, color: "#6b7280" }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 700 }}>
-        {value ?? "—"}
-      </div>
+    <div
+      style={{
+        background: "white",
+        border: "1px solid #e5e7eb",
+        borderRadius: 16,
+        padding: 14,
+        boxShadow: "0 1px 0 rgba(0,0,0,0.03)",
+        ...style,
+      }}
+    >
+      {children}
     </div>
   );
 }
 
-function Section({ title, subtitle, children, right }) {
+function SectionHeader({ title, subtitle, right }) {
   return (
-    <div style={{
-      marginTop: 14, background: "white",
-      border: "1px solid #e5e7eb", borderRadius: 16, padding: 14
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 14 }}>{title}</div>
-          {subtitle && <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{subtitle}</div>}
-        </div>
-        {right}
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div>
+        <div style={{ fontWeight: 800, fontSize: 14 }}>{title}</div>
+        {subtitle ? (
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{subtitle}</div>
+        ) : null}
       </div>
-      <div style={{ marginTop: 10 }}>
-        {children}
-      </div>
+      {right}
     </div>
   );
+}
+
+function Pill({ children }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 10px",
+        borderRadius: 999,
+        border: "1px solid #e5e7eb",
+        background: "#f9fafb",
+        fontSize: 12,
+        color: "#374151",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function StatCard({ label, value, hint }) {
+  return (
+    <div
+      style={{
+        border: "1px solid #e5e7eb",
+        borderRadius: 14,
+        padding: 12,
+        minWidth: 150,
+        background: "white",
+      }}
+    >
+      <div style={{ fontSize: 12, color: "#6b7280" }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>
+        {value ?? "—"}
+      </div>
+      {hint ? <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{hint}</div> : null}
+    </div>
+  );
+}
+
+function LoadingInline({ text = "Cargando…" }) {
+  return (
+    <div style={{ fontSize: 12, color: "#6b7280" }}>
+      {text}
+    </div>
+  );
+}
+
+function formatMoney(n) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return null;
+  const x = Number(n);
+  return x.toLocaleString("es-MX", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+}
+
+function computeStats(values) {
+  if (!values || values.length === 0) return { min: null, max: null, avg: null, n: 0 };
+  let min = Infinity, max = -Infinity, sum = 0;
+  for (const v of values) {
+    const x = Number(v);
+    if (Number.isNaN(x)) continue;
+    if (x < min) min = x;
+    if (x > max) max = x;
+    sum += x;
+  }
+  const n = values.length;
+  return {
+    min: formatMoney(min),
+    max: formatMoney(max),
+    avg: formatMoney(sum / n),
+    n,
+  };
 }
 
 export default function App() {
@@ -72,27 +162,41 @@ export default function App() {
 
   const [indexData, setIndexData] = useState(null);
   const [node, setNode] = useState("");
-  const [month, setMonth] = useState("");     // "YYYY_MM"
-  const [year, setYear] = useState("2024");   // "YYYY"
-  const [day, setDay] = useState("");         // "YYYY-MM-DD"
 
-  const [dailySeries, setDailySeries] = useState([]);     // [{d, avg, min, max, n}]
-  const [monthlySeries, setMonthlySeries] = useState([]); // [{t, d, h, pml}]
+  const [year, setYear] = useState("2024");
+  const [month, setMonth] = useState(""); // "YYYY_MM"
+  const [day, setDay] = useState("");     // "YYYY-MM-DD"
+
+  const [dailyMeta, setDailyMeta] = useState({ tz: "America/Mexico_City" });
+  const [dailySeries, setDailySeries] = useState([]); // [{d, avg, min, max, n}]
+
+  const [monthlyMeta, setMonthlyMeta] = useState(null);
+  const [monthlySeries, setMonthlySeries] = useState([]); // [{d,h,t,pml}]
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState({ idx: false, daily: false, month: false });
 
-  // 1) Load index.json
+  const annualRef = useRef(null);
+  const monthRef = useRef(null);
+  const dayRef = useRef(null);
+
+  // --------- Load index.json ----------
   useEffect(() => {
     let cancel = false;
     (async () => {
       setError("");
-      setLoading(s => ({ ...s, idx: true }));
+      setLoading((s) => ({ ...s, idx: true }));
       setIndexData(null);
+      setNode("");
+      setMonth("");
+      setDay("");
       setDailySeries([]);
       setMonthlySeries([]);
+      setMonthlyMeta(null);
+
       try {
-        const url = `${BASE}/pml-mda/${projectKey}/index.json`;
-        const idx = await fetchJson(url);
+        const idxUrl = `${BASE}/pml-mda/${projectKey}/index.json`;
+        const idx = await fetchJson(idxUrl);
         if (cancel) return;
 
         setIndexData(idx);
@@ -100,121 +204,135 @@ export default function App() {
         const defaultNode = idx.defaultNode || idx.nodes?.[0]?.node || "";
         setNode(defaultNode);
 
-        // default month: last available for default node
-        const nodeObj = (idx.nodes || []).find(n => n.node === defaultNode) || idx.nodes?.[0];
+        const nodeObj = (idx.nodes || []).find((n) => n.node === defaultNode) || idx.nodes?.[0];
         const months = (nodeObj?.months || []).slice().sort();
         const lastMonth = months.length ? months[months.length - 1] : "";
         setMonth(lastMonth);
 
-        // default year: from lastMonth if exists
-        if (lastMonth?.length >= 4) setYear(String(lastMonth).slice(0, 4));
+        if (lastMonth) setYear(lastMonth.slice(0, 4));
       } catch (e) {
         if (!cancel) setError(String(e.message || e));
       } finally {
-        if (!cancel) setLoading(s => ({ ...s, idx: false }));
+        if (!cancel) setLoading((s) => ({ ...s, idx: false }));
       }
     })();
+
     return () => { cancel = true; };
   }, [projectKey]);
 
   const nodeOptions = useMemo(() => {
     if (!indexData?.nodes) return [];
-    return indexData.nodes.map(n => ({ node: n.node, system: n.system }));
+    return indexData.nodes.map((n) => ({ node: n.node, system: n.system }));
   }, [indexData]);
 
   const monthOptions = useMemo(() => {
     if (!indexData?.nodes || !node) return [];
-    const nodeObj = indexData.nodes.find(n => n.node === node);
+    const nodeObj = indexData.nodes.find((n) => n.node === node);
     return (nodeObj?.months || []).slice().sort();
   }, [indexData, node]);
 
-  // 2) Load daily series (historical) whenever project/node changes
+  // --------- Load daily series ----------
   useEffect(() => {
     let cancel = false;
     (async () => {
       if (!projectKey || !node) return;
+
       setError("");
-      setLoading(s => ({ ...s, daily: true }));
+      setLoading((s) => ({ ...s, daily: true }));
       setDailySeries([]);
+
       try {
         const url = `${BASE}/pml-mda/${projectKey}/nodes/${node}/daily/series.json.gz`;
         const data = await fetchGzJson(url);
         if (cancel) return;
 
-        const daily = (data.daily || []).map(row => ({
-          d: row[0],          // YYYY-MM-DD
+        const daily = (data.daily || []).map((row) => ({
+          d: row[0],
           avg: Number(row[1]),
           min: Number(row[2]),
           max: Number(row[3]),
           n: Number(row[4] ?? 0),
         }));
 
+        setDailyMeta({ tz: data.tz || "America/Mexico_City" });
         setDailySeries(daily);
 
-        // default year: last date’s year if available
         if (daily.length) {
-          const last = daily[daily.length - 1].d;
-          setYear(last.slice(0, 4));
+          const lastDate = daily[daily.length - 1].d;
+          setYear(lastDate.slice(0, 4));
         }
       } catch (e) {
         if (!cancel) setError(String(e.message || e));
       } finally {
-        if (!cancel) setLoading(s => ({ ...s, daily: false }));
+        if (!cancel) setLoading((s) => ({ ...s, daily: false }));
       }
     })();
+
     return () => { cancel = true; };
   }, [projectKey, node]);
 
-  // years available from dailySeries
   const yearOptions = useMemo(() => {
     const set = new Set();
     for (const r of dailySeries) set.add(r.d.slice(0, 4));
     return Array.from(set).sort();
   }, [dailySeries]);
 
-  // historical chart data (avg)
+  // --------- Historical chart (monthly downsample from daily) ----------
   const histChart = useMemo(() => {
-    // downsample by month for the TOP chart (very light): keep one point per month (avg of daily avg)
-    // If you prefer daily, just return dailySeries directly.
-    const byMonth = new Map(); // YYYY-MM -> {sum, n, min, max}
+    // Monthly points: avg = mean(daily avg), min = min(daily min), max = max(daily max)
+    const byMonth = new Map();
     for (const r of dailySeries) {
-      const ym = r.d.slice(0, 7);
-      const cur = byMonth.get(ym) || { sum: 0, n: 0, min: Infinity, max: -Infinity };
-      cur.sum += r.avg;
+      const ym = r.d.slice(0, 7); // YYYY-MM
+      const cur = byMonth.get(ym) || { sumAvg: 0, n: 0, min: Infinity, max: -Infinity };
+      cur.sumAvg += r.avg;
       cur.n += 1;
       if (r.min < cur.min) cur.min = r.min;
       if (r.max > cur.max) cur.max = r.max;
       byMonth.set(ym, cur);
     }
+
     const out = [];
     for (const [ym, a] of Array.from(byMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
-      out.push({ t: ym, avg: a.sum / a.n, min: a.min, max: a.max });
+      out.push({
+        t: ym,
+        avg: a.sumAvg / a.n,
+        min: a.min,
+        max: a.max,
+        year: ym.slice(0, 4),
+      });
     }
     return out;
   }, [dailySeries]);
 
-  // annual chart data (daily)
+  // --------- Annual chart (daily filtered) ----------
   const annualChart = useMemo(() => {
     return dailySeries
-      .filter(r => r.d.startsWith(year + "-"))
-      .map(r => ({ t: r.d, avg: r.avg, min: r.min, max: r.max }));
+      .filter((r) => r.d.startsWith(year + "-"))
+      .map((r) => ({ t: r.d, avg: r.avg, min: r.min, max: r.max, n: r.n }));
   }, [dailySeries, year]);
 
-  // 3) Load monthly hourly whenever project/node/month changes
+  const annualStats = useMemo(() => {
+    const vals = annualChart.map((r) => r.avg);
+    return computeStats(vals);
+  }, [annualChart]);
+
+  // --------- Load monthly hourly ----------
   useEffect(() => {
     let cancel = false;
     (async () => {
       if (!projectKey || !node || !month) return;
+
       setError("");
-      setLoading(s => ({ ...s, month: true }));
+      setLoading((s) => ({ ...s, month: true }));
       setMonthlySeries([]);
+      setMonthlyMeta(null);
+
       try {
         const url = `${BASE}/pml-mda/${projectKey}/nodes/${node}/hourly/${month}.json.gz`;
         const data = await fetchGzJson(url);
         if (cancel) return;
 
-        // EXPECTED: data.rows = [ [YYYY-MM-DD, hour, pml], ... ]
-        const rows = data.rows || data.data || [];
+        const rows = data.rows || [];
         const pts = rows.map((r) => {
           const d = r[0];
           const h = Number(r[1]);
@@ -222,216 +340,385 @@ export default function App() {
           return {
             d,
             h,
-            t: `${d} ${fmt2(h)}:00`,
+            t: `${d} ${pad2(h)}:00`,
             pml: p,
           };
         });
 
+        setMonthlyMeta({
+          project: data.project,
+          displayName: data.displayName,
+          node: data.node,
+          rawNode: data.rawNode,
+          system: data.system,
+          month: data.month,
+        });
+
         setMonthlySeries(pts);
 
-        // default day: first day of month (or last if you prefer)
-        if (pts.length) {
-          const firstDay = pts[0].d;
-          setDay(firstDay);
+        // Default day: first day of month (or keep if still in this month)
+        const days = Array.from(new Set(pts.map((p) => p.d))).sort();
+        if (!day || !days.includes(day)) {
+          setDay(days[0] || "");
         }
       } catch (e) {
         if (!cancel) setError(String(e.message || e));
       } finally {
-        if (!cancel) setLoading(s => ({ ...s, month: false }));
+        if (!cancel) setLoading((s) => ({ ...s, month: false }));
       }
     })();
+
     return () => { cancel = true; };
   }, [projectKey, node, month]);
 
-  // days available within the selected month (from monthlySeries)
   const dayOptions = useMemo(() => {
     const set = new Set();
     for (const r of monthlySeries) set.add(r.d);
     return Array.from(set).sort();
   }, [monthlySeries]);
 
-  // monthly stats
-  const monthStats = useMemo(() => {
-    if (!monthlySeries.length) return { min: null, max: null, avg: null, n: 0 };
-    let min = Infinity, max = -Infinity, sum = 0;
-    for (const r of monthlySeries) {
-      min = Math.min(min, r.pml);
-      max = Math.max(max, r.pml);
-      sum += r.pml;
-    }
-    return { min: min.toFixed(2), max: max.toFixed(2), avg: (sum / monthlySeries.length).toFixed(2), n: monthlySeries.length };
-  }, [monthlySeries]);
+  const monthStats = useMemo(() => computeStats(monthlySeries.map((r) => r.pml)), [monthlySeries]);
 
-  // daily (24h) derived from monthlySeries
+  // Daily (24h, 23/25 possible) derived from monthly
   const daySeries = useMemo(() => {
     if (!day) return [];
-    const pts = monthlySeries
-      .filter(r => r.d === day)
+    return monthlySeries
+      .filter((r) => r.d === day)
       .slice()
       .sort((a, b) => a.h - b.h)
-      .map(r => ({ t: `${fmt2(r.h)}:00`, pml: r.pml }));
-    return pts;
+      .map((r) => ({ t: `${pad2(r.h)}:00`, pml: r.pml, hour: r.h }));
   }, [monthlySeries, day]);
 
-  const dayStats = useMemo(() => {
-    if (!daySeries.length) return { min: null, max: null, avg: null, n: 0 };
-    let min = Infinity, max = -Infinity, sum = 0;
-    for (const r of daySeries) {
-      min = Math.min(min, r.pml);
-      max = Math.max(max, r.pml);
-      sum += r.pml;
-    }
-    return { min: min.toFixed(2), max: max.toFixed(2), avg: (sum / daySeries.length).toFixed(2), n: daySeries.length };
-  }, [daySeries]);
+  const dayStats = useMemo(() => computeStats(daySeries.map((r) => r.pml)), [daySeries]);
 
-  const title = PROJECTS.find(p => p.key === projectKey)?.name ?? projectKey;
+  // --------- Zoom interactions ----------
+  const scrollToRef = (ref) => {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const onHistClick = (e) => {
+    // Click on a point: pick year from payload
+    const p = e?.activePayload?.[0]?.payload;
+    if (!p?.year) return;
+    setYear(p.year);
+    // UX: jump to annual
+    setTimeout(() => scrollToRef(annualRef), 50);
+  };
+
+  const onAnnualClick = (e) => {
+    // Click daily point -> select month + day
+    const p = e?.activePayload?.[0]?.payload;
+    if (!p?.t) return;
+    const clickedDay = p.t; // YYYY-MM-DD
+    const mk = monthKeyFromDate(clickedDay);
+
+    // If month exists in index list for this node, set it; otherwise fallback to current selection
+    if (monthOptions.includes(mk)) {
+      setMonth(mk);
+    }
+    setDay(clickedDay);
+    setTimeout(() => scrollToRef(monthRef), 50);
+  };
+
+  const onMonthClick = (e) => {
+    // Click hourly point -> select day
+    const p = e?.activePayload?.[0]?.payload;
+    if (!p?.d) return;
+    setDay(p.d);
+    setTimeout(() => scrollToRef(dayRef), 50);
+  };
+
+  // --------- UI labels ----------
+  const projectLabel =
+    PROJECTS.find((p) => p.key === projectKey)?.display ||
+    indexData?.displayName ||
+    projectKey;
+
+  const subtitleBits = useMemo(() => {
+    const sys = (indexData?.nodes || []).find((n) => n.node === node)?.system;
+    return { sys };
+  }, [indexData, node]);
+
+  const lastUpdated = useMemo(() => {
+    // Not in your schema; we leave blank for now.
+    return null;
+  }, []);
+
+  // --------- Responsive layout: desktop grid, mobile stacked ----------
+  const [desktop, setDesktop] = useState(isDesktop());
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const handler = () => setDesktop(mq.matches);
+    mq.addEventListener?.("change", handler);
+    return () => mq.removeEventListener?.("change", handler);
+  }, []);
+
+  // --------- Controls ----------
+  const Control = ({ value, onChange, options, disabled, width = 170 }) => (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      style={{
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        background: disabled ? "#f3f4f6" : "white",
+        minWidth: width,
+      }}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+
+  const TopBar = (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
+          PML MDA · TZ: {dailyMeta.tz || "America/Mexico_City"}
+          {subtitleBits.sys ? ` · Sistema: ${subtitleBits.sys}` : ""}
+        </div>
+        <h1 style={{ margin: "6px 0 0", fontSize: 26, letterSpacing: -0.2 }}>
+          {projectLabel} — {node || "—"}
+        </h1>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+          <Pill>Zoom: histórico → anual → mensual → diario</Pill>
+          {monthlyMeta?.month ? <Pill>Mes activo: {monthlyMeta.month}</Pill> : null}
+          {day ? <Pill>Día activo: {day}</Pill> : null}
+          {lastUpdated ? <Pill>Actualizado: {lastUpdated}</Pill> : null}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <Control
+          value={projectKey}
+          onChange={(v) => setProjectKey(v)}
+          disabled={loading.idx}
+          width={180}
+          options={PROJECTS.map((p) => ({ value: p.key, label: p.display }))}
+        />
+        <Control
+          value={node}
+          onChange={(v) => setNode(v)}
+          disabled={loading.idx || !nodeOptions.length}
+          width={170}
+          options={nodeOptions.map((n) => ({ value: n.node, label: `${n.node} (${n.system})` }))}
+        />
+        <Control
+          value={year}
+          onChange={(v) => setYear(v)}
+          disabled={loading.daily || !yearOptions.length}
+          width={120}
+          options={yearOptions.map((y) => ({ value: y, label: y }))}
+        />
+        <Control
+          value={month}
+          onChange={(v) => setMonth(v)}
+          disabled={loading.idx || !monthOptions.length}
+          width={130}
+          options={monthOptions.map((m) => ({ value: m, label: m }))}
+        />
+        <Control
+          value={day}
+          onChange={(v) => setDay(v)}
+          disabled={loading.month || !dayOptions.length}
+          width={150}
+          options={dayOptions.map((d) => ({ value: d, label: d }))}
+        />
+      </div>
+    </div>
+  );
+
+  const ErrorBanner = error ? (
+    <div
+      style={{
+        marginTop: 14,
+        padding: 12,
+        borderRadius: 14,
+        border: "1px solid #fecaca",
+        background: "#fff1f2",
+        color: "#991b1b",
+      }}
+    >
+      <b>Error:</b> {error}
+    </div>
+  ) : null;
+
+  // Tooltip formatters
+  const moneyTooltip = (value) => [`${formatMoney(value)} $/MWh`, ""];
+  const plainTooltip = (value) => formatMoney(value);
+
+  // Custom tooltip label simplifier
+  const TooltipLabel = ({ label }) => <span style={{ fontSize: 12 }}>{label}</span>;
 
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial", background: "#f9fafb", minHeight: "100vh" }}>
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>Sempra Infraestructura · PML MDA · TZ: America/Mexico_City</div>
-            <h1 style={{ margin: "6px 0 0", fontSize: 26 }}>{title}</h1>
-          </div>
+      <div style={{ maxWidth: 1280, margin: "0 auto", padding: 20 }}>
+        {TopBar}
+        {ErrorBanner}
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <select value={projectKey} onChange={(e) => setProjectKey(e.target.value)}
-              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb" }}>
-              {PROJECTS.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
-            </select>
+        {/* Grid: 2 cols desktop (hist+annual), then full-width monthly, then daily */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: desktop ? "1fr 1fr" : "1fr",
+            gap: 14,
+            marginTop: 14,
+          }}
+        >
+          {/* 1) Historical */}
+          <Card>
+            <SectionHeader
+              title="1) Histórico (resumen mensual)"
+              subtitle="Click en un punto para saltar al año correspondiente."
+              right={
+                loading.daily ? (
+                  <LoadingInline text="Cargando daily…" />
+                ) : (
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>{histChart.length} meses</div>
+                )
+              }
+            />
+            <div style={{ height: 260, marginTop: 10 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={histChart} onClick={onHistClick}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="t" minTickGap={40} />
+                  <YAxis />
+                  <Tooltip label={<TooltipLabel />} formatter={(v) => moneyTooltip(v)} />
+                  <Line type="monotone" dataKey="avg" dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+              Fuente: agregado diario → mensual (promedio de promedios diarios).
+            </div>
+          </Card>
 
-            <select value={node} onChange={(e) => setNode(e.target.value)}
-              disabled={!nodeOptions.length || loading.idx}
-              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 160 }}>
-              {nodeOptions.map(n => <option key={n.node} value={n.node}>{n.node} ({n.system})</option>)}
-            </select>
-
-            <select value={year} onChange={(e) => setYear(e.target.value)}
-              disabled={!yearOptions.length || loading.daily}
-              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 110 }}>
-              {yearOptions.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-
-            <select value={month} onChange={(e) => setMonth(e.target.value)}
-              disabled={!monthOptions.length || loading.idx}
-              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 120 }}>
-              {monthOptions.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-
-            <select value={day} onChange={(e) => setDay(e.target.value)}
-              disabled={!dayOptions.length || loading.month}
-              style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 130 }}>
-              {dayOptions.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
+          {/* 2) Annual */}
+          <Card>
+            <div ref={annualRef} />
+            <SectionHeader
+              title={`2) Anual (diario) — ${year}`}
+              subtitle="Click en un día para abrir el mes y el detalle diario."
+              right={
+                loading.daily ? (
+                  <LoadingInline text="…" />
+                ) : (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <StatCard label="Min (avg diario)" value={annualStats.min} />
+                    <StatCard label="Avg (avg diario)" value={annualStats.avg} />
+                    <StatCard label="Max (avg diario)" value={annualStats.max} />
+                  </div>
+                )
+              }
+            />
+            <div style={{ height: 260, marginTop: 10 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={annualChart} onClick={onAnnualClick}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="t" minTickGap={45} />
+                  <YAxis />
+                  <Tooltip label={<TooltipLabel />} formatter={(v) => moneyTooltip(v)} />
+                  <Line type="monotone" dataKey="avg" dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+              Tip: días con 23/25 horas (DST) se reflejan en el conteo “n” del agregado diario.
+            </div>
+          </Card>
         </div>
 
-        {error && (
-          <div style={{
-            marginTop: 14, padding: 12, borderRadius: 12,
-            border: "1px solid #fecaca", background: "#fff1f2", color: "#991b1b"
-          }}>
-            <b>Error:</b> {error}
-          </div>
-        )}
-
-        {/* 1) Historical (compact) */}
-        <Section
-          title="Histórico (resumen mensual)"
-          subtitle="Promedio mensual (derivado de agregados diarios). Útil para panorama general sin saturar."
-          right={<div style={{ fontSize: 12, color: "#6b7280" }}>{loading.daily ? "Cargando daily…" : `${histChart.length} meses`}</div>}
-        >
-          <div style={{ height: 240, minHeight: 240 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={histChart}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="t" minTickGap={40} />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="avg" dot={false} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </Section>
-
-        {/* 2) Annual */}
-        <Section
-          title={`Anual (diario) — ${year}`}
-          subtitle="Promedio diario con banda min/max (si quieres, la activamos)."
-          right={<div style={{ fontSize: 12, color: "#6b7280" }}>{loading.daily ? "…" : `${annualChart.length} días`}</div>}
-        >
-          <div style={{ height: 260, minHeight: 260 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={annualChart}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="t" minTickGap={40} />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="avg" dot={false} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </Section>
-
         {/* 3) Monthly */}
-        <Section
-          title={`Mensual (horario) — ${month}`}
-          subtitle="Detalle horario del mes."
-          right={
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <StatCard label="Mínimo ($/MWh)" value={monthStats.min} />
-              <StatCard label="Promedio ($/MWh)" value={monthStats.avg} />
-              <StatCard label="Máximo ($/MWh)" value={monthStats.max} />
+        <div style={{ marginTop: 14 }}>
+          <Card>
+            <div ref={monthRef} />
+            <SectionHeader
+              title={`3) Mensual (horario) — ${month || "—"}`}
+              subtitle="Click en un punto para seleccionar el día y ver el detalle horario abajo."
+              right={
+                loading.month ? (
+                  <LoadingInline text="Cargando mes…" />
+                ) : (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <StatCard label="Mínimo" value={monthStats.min} hint={`${monthStats.n} pts`} />
+                    <StatCard label="Promedio" value={monthStats.avg} />
+                    <StatCard label="Máximo" value={monthStats.max} />
+                  </div>
+                )
+              }
+            />
+
+            <div style={{ height: 340, marginTop: 10 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={monthlySeries} onClick={onMonthClick}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="t" minTickGap={60} />
+                  <YAxis />
+                  <Tooltip label={<TooltipLabel />} formatter={(v) => moneyTooltip(v)} />
+                  <Line type="monotone" dataKey="pml" dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
-          }
-        >
-          <div style={{ height: 320, minHeight: 320 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={monthlySeries}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="t" minTickGap={50} />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="pml" dot={false} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
-            {loading.month ? "Cargando…" : `${monthStats.n} puntos horarios`}
-          </div>
-        </Section>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <span>
+                {monthlyMeta?.system ? `Sistema: ${monthlyMeta.system} · ` : ""}
+                {monthlyMeta?.rawNode ? `RawNode: ${monthlyMeta.rawNode}` : ""}
+              </span>
+              <span>{loading.month ? "" : `${monthStats.n} puntos horarios`}</span>
+            </div>
+          </Card>
+        </div>
 
         {/* 4) Daily */}
-        <Section
-          title={`Diario (horario) — ${day || "—"}`}
-          subtitle="Derivado del mes seleccionado. Días con 23/25 horas se muestran tal cual."
-          right={
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <StatCard label="Mínimo ($/MWh)" value={dayStats.min} />
-              <StatCard label="Promedio ($/MWh)" value={dayStats.avg} />
-              <StatCard label="Máximo ($/MWh)" value={dayStats.max} />
-            </div>
-          }
-        >
-          <div style={{ height: 220, minHeight: 220 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={daySeries}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="t" />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="pml" dot={false} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
-            {daySeries.length ? `${daySeries.length} horas` : "—"}
-          </div>
-        </Section>
+        <div style={{ marginTop: 14 }}>
+          <Card>
+            <div ref={dayRef} />
+            <SectionHeader
+              title={`4) Diario (horario) — ${day || "—"}`}
+              subtitle="Derivado del mes seleccionado. Días con 23/25 horas se muestran tal cual."
+              right={
+                daySeries.length ? (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <StatCard label="Mínimo" value={dayStats.min} hint={`${daySeries.length} horas`} />
+                    <StatCard label="Promedio" value={dayStats.avg} />
+                    <StatCard label="Máximo" value={dayStats.max} />
+                  </div>
+                ) : (
+                  <LoadingInline text={loading.month ? "Cargando…" : "Sin datos"} />
+                )
+              }
+            />
 
+            <div style={{ height: 240, marginTop: 10 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={daySeries}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="t" />
+                  <YAxis />
+                  <Tooltip label={<TooltipLabel />} formatter={(v) => moneyTooltip(v)} />
+                  <Line type="monotone" dataKey="pml" dot={false} strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+              Nota: este panel no descarga más data. Solo filtra el mes ya cargado.
+            </div>
+          </Card>
+        </div>
+
+        {/* Footer */}
         <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
-          Fuente: CENACE (PML MDA). Datos en S3. App en Amplify.
+          Fuente: CENACE (PML MDA). Datos en S3 ({BASE}). App en Amplify.
         </div>
       </div>
     </div>
