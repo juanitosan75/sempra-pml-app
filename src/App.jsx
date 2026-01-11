@@ -27,13 +27,23 @@ async function fetchJson(url) {
   return await r.json();
 }
 
-async function fetchGzJson(url) {
+async function fetchMaybeGzJson(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} - ${url}`);
+
   const buf = await r.arrayBuffer();
-  const inflated = pako.ungzip(new Uint8Array(buf), { to: "string" });
-  return JSON.parse(inflated);
+  const u8 = new Uint8Array(buf);
+
+  // gzip magic bytes: 1F 8B
+  const isGz = u8.length >= 2 && u8[0] === 0x1f && u8[1] === 0x8b;
+
+  const text = isGz
+    ? pako.ungzip(u8, { to: "string" })
+    : new TextDecoder().decode(u8);
+
+  return JSON.parse(text);
 }
+
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -243,7 +253,7 @@ export default function App() {
 
       try {
         const url = `${BASE}/pml-mda/${projectKey}/nodes/${node}/daily/series.json.gz`;
-        const data = await fetchGzJson(url);
+        const data = await fetchMaybeGzJson(url);
         if (cancel) return;
 
         const daily = (data.daily || []).map((row) => ({
@@ -329,7 +339,7 @@ export default function App() {
 
       try {
         const url = `${BASE}/pml-mda/${projectKey}/nodes/${node}/hourly/${month}.json.gz`;
-        const data = await fetchGzJson(url);
+        const data = await fetchMaybeGzJson(url);
         if (cancel) return;
 
         const rows = data.rows || [];
