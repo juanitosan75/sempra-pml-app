@@ -21,20 +21,27 @@ const PROJECTS = [
 
 const BASE = import.meta.env.VITE_DATA_BASE_URL;
 
-async function fetchJson(url) {
-  const r = await fetch(url);
+// Cache-buster helper (useful for index.json and anything you want to hard-refresh)
+function withBuster(url, buster = Date.now()) {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}v=${buster}`;
+}
+
+async function fetchJson(url, opts = {}) {
+  const r = await fetch(url, { cache: "no-store", ...opts });
   if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} - ${url}`);
   return await r.json();
 }
 
-async function fetchMaybeGzJson(url) {
-  const r = await fetch(url);
+async function fetchMaybeGzJson(url, opts = {}) {
+  // NOTE: Browsers may auto-decompress if server returns Content-Encoding: gzip.
+  // This function detects gzip magic bytes (1F 8B). If not gzip, treats as plain JSON.
+  const r = await fetch(url, { cache: "no-store", ...opts });
   if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} - ${url}`);
 
   const buf = await r.arrayBuffer();
   const u8 = new Uint8Array(buf);
 
-  // gzip magic bytes: 1F 8B
   const isGz = u8.length >= 2 && u8[0] === 0x1f && u8[1] === 0x8b;
 
   const text = isGz
@@ -44,14 +51,8 @@ async function fetchMaybeGzJson(url) {
   return JSON.parse(text);
 }
 
-
 function pad2(n) {
   return String(n).padStart(2, "0");
-}
-
-function ymFromMonthKey(monthKey) {
-  // "2024_05" -> { y: "2024", m: "05" }
-  return { y: String(monthKey).slice(0, 4), m: String(monthKey).slice(5, 7) };
 }
 
 function monthKeyFromDate(dateStr) {
@@ -82,11 +83,20 @@ function Card({ children, style }) {
 
 function SectionHeader({ title, subtitle, right }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 12,
+        flexWrap: "wrap",
+      }}
+    >
       <div>
         <div style={{ fontWeight: 800, fontSize: 14 }}>{title}</div>
         {subtitle ? (
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{subtitle}</div>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+            {subtitle}
+          </div>
         ) : null}
       </div>
       {right}
@@ -129,41 +139,49 @@ function StatCard({ label, value, hint }) {
       <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>
         {value ?? "—"}
       </div>
-      {hint ? <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{hint}</div> : null}
+      {hint ? (
+        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+          {hint}
+        </div>
+      ) : null}
     </div>
   );
 }
 
 function LoadingInline({ text = "Cargando…" }) {
-  return (
-    <div style={{ fontSize: 12, color: "#6b7280" }}>
-      {text}
-    </div>
-  );
+  return <div style={{ fontSize: 12, color: "#6b7280" }}>{text}</div>;
 }
 
 function formatMoney(n) {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return null;
   const x = Number(n);
-  return x.toLocaleString("es-MX", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  return x.toLocaleString("es-MX", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
+  });
 }
 
 function computeStats(values) {
-  if (!values || values.length === 0) return { min: null, max: null, avg: null, n: 0 };
-  let min = Infinity, max = -Infinity, sum = 0;
+  if (!values || values.length === 0)
+    return { min: null, max: null, avg: null, n: 0 };
+  let min = Infinity,
+    max = -Infinity,
+    sum = 0,
+    count = 0;
   for (const v of values) {
     const x = Number(v);
     if (Number.isNaN(x)) continue;
     if (x < min) min = x;
     if (x > max) max = x;
     sum += x;
+    count++;
   }
-  const n = values.length;
+  if (count === 0) return { min: null, max: null, avg: null, n: 0 };
   return {
     min: formatMoney(min),
     max: formatMoney(max),
-    avg: formatMoney(sum / n),
-    n,
+    avg: formatMoney(sum / count),
+    n: count,
   };
 }
 
@@ -175,7 +193,7 @@ export default function App() {
 
   const [year, setYear] = useState("2024");
   const [month, setMonth] = useState(""); // "YYYY_MM"
-  const [day, setDay] = useState("");     // "YYYY-MM-DD"
+  const [day, setDay] = useState(""); // "YYYY-MM-DD"
 
   const [dailyMeta, setDailyMeta] = useState({ tz: "America/Mexico_City" });
   const [dailySeries, setDailySeries] = useState([]); // [{d, avg, min, max, n}]
@@ -205,7 +223,9 @@ export default function App() {
       setMonthlyMeta(null);
 
       try {
-        const idxUrl = `${BASE}/pml-mda/${projectKey}/index.json`;
+        // Cache-buster here is the most important one (index controls years/months)
+        const buster = Date.now();
+        const idxUrl = withBuster(`${BASE}/pml-mda/${projectKey}/index.json`, buster);
         const idx = await fetchJson(idxUrl);
         if (cancel) return;
 
@@ -214,7 +234,8 @@ export default function App() {
         const defaultNode = idx.defaultNode || idx.nodes?.[0]?.node || "";
         setNode(defaultNode);
 
-        const nodeObj = (idx.nodes || []).find((n) => n.node === defaultNode) || idx.nodes?.[0];
+        const nodeObj =
+          (idx.nodes || []).find((n) => n.node === defaultNode) || idx.nodes?.[0];
         const months = (nodeObj?.months || []).slice().sort();
         const lastMonth = months.length ? months[months.length - 1] : "";
         setMonth(lastMonth);
@@ -227,7 +248,9 @@ export default function App() {
       }
     })();
 
-    return () => { cancel = true; };
+    return () => {
+      cancel = true;
+    };
   }, [projectKey]);
 
   const nodeOptions = useMemo(() => {
@@ -252,16 +275,22 @@ export default function App() {
       setDailySeries([]);
 
       try {
+        // You can optionally buster daily too. Usually not needed if Cache-Control is right,
+        // but it's handy while you're iterating.
         const url = `${BASE}/pml-mda/${projectKey}/nodes/${node}/daily/series.json.gz`;
         const data = await fetchMaybeGzJson(url);
         if (cancel) return;
 
-        const daily = (data.daily || []).map((row) => ({
+        // IMPORTANT FIX:
+        // Your daily JSON is: { ..., "rows":[["YYYY-MM-DD", n, avg, min, max], ...] }
+        // (we also tolerate older shape just in case)
+        const rows = data.rows || data.daily || [];
+        const daily = rows.map((row) => ({
           d: row[0],
-          avg: Number(row[1]),
-          min: Number(row[2]),
-          max: Number(row[3]),
-          n: Number(row[4] ?? 0),
+          n: Number(row[1] ?? 0),
+          avg: Number(row[2]),
+          min: Number(row[3]),
+          max: Number(row[4]),
         }));
 
         setDailyMeta({ tz: data.tz || "America/Mexico_City" });
@@ -278,7 +307,9 @@ export default function App() {
       }
     })();
 
-    return () => { cancel = true; };
+    return () => {
+      cancel = true;
+    };
   }, [projectKey, node]);
 
   const yearOptions = useMemo(() => {
@@ -289,11 +320,11 @@ export default function App() {
 
   // --------- Historical chart (monthly downsample from daily) ----------
   const histChart = useMemo(() => {
-    // Monthly points: avg = mean(daily avg), min = min(daily min), max = max(daily max)
     const byMonth = new Map();
     for (const r of dailySeries) {
       const ym = r.d.slice(0, 7); // YYYY-MM
-      const cur = byMonth.get(ym) || { sumAvg: 0, n: 0, min: Infinity, max: -Infinity };
+      const cur =
+        byMonth.get(ym) || { sumAvg: 0, n: 0, min: Infinity, max: -Infinity };
       cur.sumAvg += r.avg;
       cur.n += 1;
       if (r.min < cur.min) cur.min = r.min;
@@ -302,7 +333,9 @@ export default function App() {
     }
 
     const out = [];
-    for (const [ym, a] of Array.from(byMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+    for (const [ym, a] of Array.from(byMonth.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    )) {
       out.push({
         t: ym,
         avg: a.sumAvg / a.n,
@@ -366,7 +399,6 @@ export default function App() {
 
         setMonthlySeries(pts);
 
-        // Default day: first day of month (or keep if still in this month)
         const days = Array.from(new Set(pts.map((p) => p.d))).sort();
         if (!day || !days.includes(day)) {
           setDay(days[0] || "");
@@ -378,7 +410,9 @@ export default function App() {
       }
     })();
 
-    return () => { cancel = true; };
+    return () => {
+      cancel = true;
+    };
   }, [projectKey, node, month]);
 
   const dayOptions = useMemo(() => {
@@ -387,9 +421,11 @@ export default function App() {
     return Array.from(set).sort();
   }, [monthlySeries]);
 
-  const monthStats = useMemo(() => computeStats(monthlySeries.map((r) => r.pml)), [monthlySeries]);
+  const monthStats = useMemo(
+    () => computeStats(monthlySeries.map((r) => r.pml)),
+    [monthlySeries]
+  );
 
-  // Daily (24h, 23/25 possible) derived from monthly
   const daySeries = useMemo(() => {
     if (!day) return [];
     return monthlySeries
@@ -399,7 +435,10 @@ export default function App() {
       .map((r) => ({ t: `${pad2(r.h)}:00`, pml: r.pml, hour: r.h }));
   }, [monthlySeries, day]);
 
-  const dayStats = useMemo(() => computeStats(daySeries.map((r) => r.pml)), [daySeries]);
+  const dayStats = useMemo(
+    () => computeStats(daySeries.map((r) => r.pml)),
+    [daySeries]
+  );
 
   // --------- Zoom interactions ----------
   const scrollToRef = (ref) => {
@@ -409,22 +448,18 @@ export default function App() {
   };
 
   const onHistClick = (e) => {
-    // Click on a point: pick year from payload
     const p = e?.activePayload?.[0]?.payload;
     if (!p?.year) return;
     setYear(p.year);
-    // UX: jump to annual
     setTimeout(() => scrollToRef(annualRef), 50);
   };
 
   const onAnnualClick = (e) => {
-    // Click daily point -> select month + day
     const p = e?.activePayload?.[0]?.payload;
     if (!p?.t) return;
-    const clickedDay = p.t; // YYYY-MM-DD
+    const clickedDay = p.t;
     const mk = monthKeyFromDate(clickedDay);
 
-    // If month exists in index list for this node, set it; otherwise fallback to current selection
     if (monthOptions.includes(mk)) {
       setMonth(mk);
     }
@@ -433,7 +468,6 @@ export default function App() {
   };
 
   const onMonthClick = (e) => {
-    // Click hourly point -> select day
     const p = e?.activePayload?.[0]?.payload;
     if (!p?.d) return;
     setDay(p.d);
@@ -451,12 +485,9 @@ export default function App() {
     return { sys };
   }, [indexData, node]);
 
-  const lastUpdated = useMemo(() => {
-    // Not in your schema; we leave blank for now.
-    return null;
-  }, []);
+  const lastUpdated = useMemo(() => null, []);
 
-  // --------- Responsive layout: desktop grid, mobile stacked ----------
+  // --------- Responsive layout ----------
   const [desktop, setDesktop] = useState(isDesktop());
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1024px)");
@@ -488,7 +519,14 @@ export default function App() {
   );
 
   const TopBar = (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 12,
+        flexWrap: "wrap",
+      }}
+    >
       <div>
         <div style={{ fontSize: 12, color: "#6b7280" }}>
           PML MDA · TZ: {dailyMeta.tz || "America/Mexico_City"}
@@ -505,7 +543,9 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <div
+        style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}
+      >
         <Control
           value={projectKey}
           onChange={(v) => setProjectKey(v)}
@@ -518,7 +558,10 @@ export default function App() {
           onChange={(v) => setNode(v)}
           disabled={loading.idx || !nodeOptions.length}
           width={170}
-          options={nodeOptions.map((n) => ({ value: n.node, label: `${n.node} (${n.system})` }))}
+          options={nodeOptions.map((n) => ({
+            value: n.node,
+            label: `${n.node} (${n.system})`,
+          }))}
         />
         <Control
           value={year}
@@ -560,20 +603,21 @@ export default function App() {
     </div>
   ) : null;
 
-  // Tooltip formatters
   const moneyTooltip = (value) => [`${formatMoney(value)} $/MWh`, ""];
-  const plainTooltip = (value) => formatMoney(value);
-
-  // Custom tooltip label simplifier
   const TooltipLabel = ({ label }) => <span style={{ fontSize: 12 }}>{label}</span>;
 
   return (
-    <div style={{ fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial", background: "#f9fafb", minHeight: "100vh" }}>
+    <div
+      style={{
+        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+        background: "#f9fafb",
+        minHeight: "100vh",
+      }}
+    >
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: 20 }}>
         {TopBar}
         {ErrorBanner}
 
-        {/* Grid: 2 cols desktop (hist+annual), then full-width monthly, then daily */}
         <div
           style={{
             display: "grid",
@@ -582,7 +626,6 @@ export default function App() {
             marginTop: 14,
           }}
         >
-          {/* 1) Historical */}
           <Card>
             <SectionHeader
               title="1) Histórico (resumen mensual)"
@@ -591,7 +634,9 @@ export default function App() {
                 loading.daily ? (
                   <LoadingInline text="Cargando daily…" />
                 ) : (
-                  <div style={{ fontSize: 12, color: "#6b7280" }}>{histChart.length} meses</div>
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>
+                    {histChart.length} meses
+                  </div>
                 )
               }
             />
@@ -611,7 +656,6 @@ export default function App() {
             </div>
           </Card>
 
-          {/* 2) Annual */}
           <Card>
             <div ref={annualRef} />
             <SectionHeader
@@ -641,12 +685,12 @@ export default function App() {
               </ResponsiveContainer>
             </div>
             <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-              Tip: días con 23/25 horas (DST) se reflejan en el conteo “n” del agregado diario.
+              Tip: días con 23/25 horas (DST) se reflejan en el conteo “n” del agregado
+              diario.
             </div>
           </Card>
         </div>
 
-        {/* 3) Monthly */}
         <div style={{ marginTop: 14 }}>
           <Card>
             <div ref={monthRef} />
@@ -678,7 +722,17 @@ export default function App() {
               </ResponsiveContainer>
             </div>
 
-            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div
+              style={{
+                marginTop: 10,
+                fontSize: 12,
+                color: "#6b7280",
+                display: "flex",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
               <span>
                 {monthlyMeta?.system ? `Sistema: ${monthlyMeta.system} · ` : ""}
                 {monthlyMeta?.rawNode ? `RawNode: ${monthlyMeta.rawNode}` : ""}
@@ -688,7 +742,6 @@ export default function App() {
           </Card>
         </div>
 
-        {/* 4) Daily */}
         <div style={{ marginTop: 14 }}>
           <Card>
             <div ref={dayRef} />
@@ -698,7 +751,11 @@ export default function App() {
               right={
                 daySeries.length ? (
                   <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <StatCard label="Mínimo" value={dayStats.min} hint={`${daySeries.length} horas`} />
+                    <StatCard
+                      label="Mínimo"
+                      value={dayStats.min}
+                      hint={`${daySeries.length} horas`}
+                    />
                     <StatCard label="Promedio" value={dayStats.avg} />
                     <StatCard label="Máximo" value={dayStats.max} />
                   </div>
@@ -726,7 +783,6 @@ export default function App() {
           </Card>
         </div>
 
-        {/* Footer */}
         <div style={{ marginTop: 14, fontSize: 12, color: "#6b7280" }}>
           Fuente: CENACE (PML MDA). Datos en S3 ({BASE}). App en Amplify.
         </div>
